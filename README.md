@@ -86,7 +86,6 @@ Install a supported Intel GPU driver first. For an XPU-enabled PyTorch build, in
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/xpu
-.\.venv\Scripts\python.exe -m pip install laya
 .\.venv\Scripts\python.exe -c "import torch; print(torch.xpu.is_available())"
 ```
 
