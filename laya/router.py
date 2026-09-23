@@ -254,9 +254,8 @@ class Router:
             if evicted:
                 gc.collect()
                 try:
-                    import torch
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()
+                    from .agent import _empty_accelerator_cache
+                    _empty_accelerator_cache()
                 except Exception:
                     pass
 
@@ -304,9 +303,8 @@ class Router:
                 del agent
             gc.collect()
             try:
-                import torch
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                from .agent import _empty_accelerator_cache
+                _empty_accelerator_cache()
             except Exception:
                 pass
 

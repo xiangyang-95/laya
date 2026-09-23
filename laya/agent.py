@@ -22,6 +22,55 @@ from .common import (
 )
 
 
+def _device_available(device_type: str) -> bool:
+    if device_type == "cpu":
+        return True
+    if device_type == "mps":
+        backend = getattr(torch.backends, "mps", None)
+    elif device_type in ("cuda", "xpu"):
+        backend = getattr(torch, device_type, None)
+    else:
+        return True
+    return backend is not None and backend.is_available()
+
+
+def _resolve_device(device: Optional[str]) -> torch.device:
+    if device is not None:
+        target_device = torch.device(device)
+        if not _device_available(target_device.type):
+            label = {"cuda": "CUDA", "mps": "MPS", "xpu": "Intel GPU (XPU)"}.get(
+                target_device.type, target_device.type.upper())
+            print("Warning: %s requested but not available. Falling back to CPU." % label)
+            return torch.device("cpu")
+        return target_device
+
+    for device_type in ("cuda", "xpu", "mps"):
+        if _device_available(device_type):
+            return torch.device(device_type)
+    return torch.device("cpu")
+
+
+def _supports_amp(device_type: str) -> bool:
+    return device_type in ("cuda", "xpu")
+
+
+def _should_fallback_to_cpu(error: Exception, device_type: str) -> bool:
+    message = str(error).lower()
+    return device_type != "cpu" and ("memory" in message or device_type in message)
+
+
+def _empty_accelerator_cache() -> None:
+    for device_type in ("cuda", "xpu"):
+        backend = getattr(torch, device_type, None)
+        if backend is None:
+            continue
+        try:
+            if backend.is_available():
+                backend.empty_cache()
+        except Exception:
+            pass
+
+
 def _fix_tokenizer_config(path: str):
     """Ensure tokenizer_config.json can be loaded across all transformers versions."""
     cfg_file = os.path.join(path, "tokenizer", "tokenizer_config.json")
@@ -167,23 +216,7 @@ class Agent:
             )
 
         # 1. Device resolution with automatic fallback
-        if device is not None:
-            target_device = torch.device(device)
-            if target_device.type == "cuda" and not torch.cuda.is_available():
-                print("Warning: CUDA requested but not available. Falling back to CPU.")
-                self.device = torch.device("cpu")
-            elif target_device.type == "mps" and not (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()):
-                print("Warning: MPS requested but not available. Falling back to CPU.")
-                self.device = torch.device("cpu")
-            else:
-                self.device = target_device
-        else:
-            if torch.cuda.is_available():
-                self.device = torch.device("cuda")
-            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-                self.device = torch.device("mps")
-            else:
-                self.device = torch.device("cpu")
+        self.device = _resolve_device(device)
 
         tok_dir = os.path.join(model_dir, "tokenizer")
         self.tok = AutoTokenizer.from_pretrained(tok_dir if os.path.exists(tok_dir) else self.cfg.get("encoder"))
@@ -244,7 +277,7 @@ class Agent:
         fell_back_from = fell_back_why = None
         try:
             self.model.to(self.device).eval()
-        except (RuntimeError, torch.cuda.OutOfMemoryError) as e:
+        except RuntimeError as e:
             if self.device.type != "cpu":
                 # Record what actually went wrong: the reason matters more than the symptom,
                 # and it is the only place the underlying exception is ever surfaced.
@@ -351,7 +384,7 @@ class Agent:
             items.append({"ids": seq, "markers": markers, "qtype": QTYPES[q["t"]]})
 
         b = collate_items([items], self.tok.pad_token_id)
-        use_amp = self.device.type == "cuda"
+        use_amp = _supports_amp(self.device.type)
 
         try:
             with torch.autocast(device_type=self.device.type, dtype=self.dtype, enabled=use_amp):
@@ -362,9 +395,9 @@ class Agent:
                     b["marker_mask"].to(self.device),
                     b["qtype"].to(self.device),
                 )
-        except (RuntimeError, torch.cuda.OutOfMemoryError) as e:
-            if self.device.type != "cpu" and ("memory" in str(e).lower() or "cuda" in str(e).lower()):
-                print("Warning: GPU memory exceeded during inference. Falling back to CPU...")
+        except RuntimeError as e:
+            if _should_fallback_to_cpu(e, self.device.type):
+                print("Warning: accelerator error during inference. Falling back to CPU...")
                 self.device = torch.device("cpu")
                 self.dtype = torch.float32
                 self.model.to(self.device)
@@ -439,9 +472,7 @@ class Agent:
         try:
             import gc
             gc.collect()
-            import torch
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+            _empty_accelerator_cache()
         except Exception:
             pass
         return False
