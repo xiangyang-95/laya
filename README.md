@@ -86,12 +86,11 @@ Install a supported Intel GPU driver first. For an XPU-enabled PyTorch build, in
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/xpu
+.\.venv\Scripts\python.exe -m pip install laya
 .\.venv\Scripts\python.exe -c "import torch; print(torch.xpu.is_available())"
 ```
 
 For a source checkout, replace `pip install laya` with `pip install -e .`. Laya automatically selects an available XPU when no device is specified; you can also request one explicitly with `device="xpu"` in `laya.load()` or `Router(device="xpu")`.
-
-Both checks print the installed Laya version without loading a checkpoint. `-I` excludes the current directory from the import search path, so a local source copy cannot mask a missing installation. Keep using the same virtual environment's Python when running your application.
 
 **Install from GitHub**
 
