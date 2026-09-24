@@ -176,6 +176,8 @@ def _amp_context(device, dtype):
     """
     if device.type == "cuda":
         return torch.autocast(device_type="cuda", dtype=dtype)
+    elif device.type == "xpu":
+        return torch.autocast(device_type="xpu", dtype=dtype)
     return nullcontext()
 
 
