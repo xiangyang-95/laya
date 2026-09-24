@@ -206,7 +206,7 @@ How often the answer changes when the options are permuted. Jev measured at 0.13
 At 20 options both are less order-stable than Jev — worth fixing with more aggressive option-order shuffling during training.
 
 
-## Other hardware: GB10 and a laptop CPU
+## Other hardware: GB10, a laptop CPU, and an Intel Arc
 
 Contributed measurements from a router deployment (laya 0.3.5). They were taken through a small HTTP server wrapping `Agent.system_one`, not in-process, so every figure includes one HTTP round trip.
 
@@ -241,6 +241,18 @@ With inter-op pinned, one question in-process on a quieter host:
 | 10 (every vCPU) | 388 ms | 708 ms |
 
 The best setting is the physical core count plus a little, not one thread per vCPU. SMT siblings contend.
+
+### Intel Arc B390 (torch 2.14.0+xpu), XPU — before/after vs CPU
+
+`english` checkpoint (421M, ModernBERT-large), in-process `agent.predict()`, one 2-option `choice` question (~90 tokens), 40 calls per row after 5 warm-ups. CPU row pinned as recommended above (intra-op 8, inter-op 1, fp32); XPU row at default threads. The default dtype is fp32, so the XPU autocast context stays off (XPU autocast is bf16/fp16 only) — these are conservative fp32-on-XPU numbers.
+
+| questions per call | CPU p50 | XPU p50 | XPU p95 | speedup (p50) |
+|---|---|---|---|---|
+| 1 | 292.0 ms | **28.0 ms** | 30.9 ms | 10.4x |
+| 3 | 732.1 ms | **69.8 ms** | 73.0 ms | 10.5x |
+| 10 | 2718.9 ms | **233.9 ms** | 255.4 ms | 11.6x |
+
+Same laptop, same session, back to back. The XPU p95 stays within ~10% of its p50 on every row (28.0 -> 30.9, 233.9 -> 255.4), while the CPU row's spread grows with batch size (292.0 -> 306.2, 2718.9 -> 2848.4). At one question the Arc B390 is slightly faster than the T4's 32.8 ms p50 above.
 
 ### Calibration on a routing task runs the other way
 

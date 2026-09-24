@@ -169,14 +169,19 @@ def _load_tokenizer(tok_dir: str, cfg: Dict) -> Any:
 def _amp_context(device, dtype):
     """Autocast context for the forward pass, or a no-op when mixed precision is not in use.
 
-    Autocast is a CUDA-only win here. Entering `torch.autocast` on a device torch has no
-    autocast backend for raises even with `enabled=False` ('User specified an unsupported
-    autocast device_type mps'), which broke every `predict()` call on the MPS GPU that torch
-    selects automatically on Apple/AMD machines. Only wrap the forward pass when we use it.
+    Entering `torch.autocast` on a device torch has no autocast backend for raises even with
+    `enabled=False` ('User specified an unsupported autocast device_type mps' / 'xpu'), which
+    broke every `predict()` call on the MPS GPU that torch selects automatically on Apple/AMD
+    machines. Only wrap the forward pass when this build and dtype actually use it: XPU
+    autocast supports bf16/fp16 only, and is skipped on builds without an XPU backend
+    (no usable torch.xpu; `is_available()` never throws, so it gates the call safely).
     """
     if device.type == "cuda":
         return torch.autocast(device_type="cuda", dtype=dtype)
-    elif device.type == "xpu":
+    elif (device.type == "xpu"
+          and dtype in (torch.bfloat16, torch.float16)
+          and getattr(torch, "xpu", None) is not None
+          and torch.xpu.is_available()):
         return torch.autocast(device_type="xpu", dtype=dtype)
     return nullcontext()
 
