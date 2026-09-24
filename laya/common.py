@@ -7,9 +7,11 @@ from typing import Dict, List, Optional, Union
 import numpy as np
 import torch
 import torch.nn as nn
+from torch.utils.checkpoint import checkpoint
 
 QTYPES = {"choice": 0, "score": 1, "noul": 2}
 QTYPE_NAMES = {v: k for k, v in QTYPES.items()}
+_DEFAULT_NOUL_LABELS = {"false": "false", "true": "true"}
 
 
 def serialize_state(state: Union[str, dict, list]) -> str:
@@ -30,19 +32,38 @@ def render_criterion(value) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(", ", ": "), default=str)
 
 
+def _resolve_noul_labels(labels=None):
+    if labels is None:
+        labels = _DEFAULT_NOUL_LABELS
+    if not isinstance(labels, dict) or set(labels) != {"false", "true"}:
+        raise ValueError("noul labels must map exactly 'false' and 'true' to distinct non-empty strings")
+    false_label, true_label = labels["false"], labels["true"]
+    if not isinstance(false_label, str) or not isinstance(true_label, str):
+        raise ValueError("noul labels must map exactly 'false' and 'true' to distinct non-empty strings")
+    false_label, true_label = false_label.strip(), true_label.strip()
+    if not false_label or not true_label or false_label == true_label:
+        raise ValueError("noul labels must map exactly 'false' and 'true' to distinct non-empty strings")
+    return false_label, true_label
+
+
 def render_options(q: Dict) -> List[str]:
-    """Render option texts in label-index order. Noul is always [false, true]."""
+    """Render option texts in label-index order. Noul semantic order is always [false, true]."""
     t, crit = q["t"], q.get("crit")
+    if t != "noul" and "labels" in q:
+        raise ValueError("labels is only supported for noul questions")
     if t == "choice":
         # only None/"" mean "no description"; 0 and False are legitimate criterion values
         return [k if v is None or v == "" else "%s: %s" % (k, render_criterion(v)) for k, v in crit.items()]
     if t == "score":
         return ["level %d: %s" % (i, render_criterion(c)) for i, c in enumerate(crit)]
     crit = crit or {}
+    false_label, true_label = _resolve_noul_labels(q.get("labels"))
     false_crit, true_crit = crit.get("false"), crit.get("true")
     return [
-        "false: " + (render_criterion(false_crit) if false_crit not in (None, "") else "no, the statement does not hold"),
-        "true: " + (render_criterion(true_crit) if true_crit not in (None, "") else "yes, the statement holds"),
+        false_label + ": "
+        + (render_criterion(false_crit) if false_crit not in (None, "") else "no, the statement does not hold"),
+        true_label + ": "
+        + (render_criterion(true_crit) if true_crit not in (None, "") else "yes, the statement holds"),
     ]
 
 
@@ -81,7 +102,8 @@ def build_sequence(
     ids.append(tok.sep_token_id)
     room = max(0, max_len - len(ids) - 1)
     st = tok(serialize_state(state).replace(mask_tok, " "), add_special_tokens=False)["input_ids"]
-    st = st[-room:] if truncate_left else st[:room]
+    # not st[-room:]: with no room left, st[-0:] is the whole state rather than none of it
+    st = st[max(0, len(st) - room):] if truncate_left else st[:room]
     ids = ids + st + [tok.sep_token_id]
     return ids[:max_len], [m for m in markers if m < max_len]
 
@@ -110,7 +132,12 @@ class DecisionModel(nn.Module):
         if self.head is not None:
             pad = ~attention_mask.bool()
             for layer in self.head.layers:
-                h = layer(h, src_key_padding_mask=pad)
+                if self.head_checkpointing and self.training and torch.is_grad_enabled():
+                    # Non-reentrant checkpointing also trains the head when its input
+                    # is frozen. Default RNG preservation keeps dropout consistent.
+                    h = checkpoint(layer, h, src_key_padding_mask=pad, use_reentrant=False)
+                else:
+                    h = layer(h, src_key_padding_mask=pad)
         idx = marker_pos.clamp(min=0)[:, :, None].expand(-1, -1, h.size(-1))
         m = torch.gather(h, 1, idx)
         logits = self.scorer(m).squeeze(-1).float()
@@ -136,11 +163,35 @@ class DecisionModel(nn.Module):
         return logits, act_logits
 
 
+def _apply_rope_config(ecfg) -> None:
+    """Carry transformers>=5 per-layer RoPE settings over to the attributes 4.x reads.
+
+    A checkpoint re-saved by transformers 5 stores RoPE as
+    `rope_parameters = {"full_attention": {"rope_theta": ...}, "sliding_attention": {...}}`.
+    transformers 4.x does not know that key, so it keeps its own defaults (global 160000,
+    local 10000) and any checkpoint whose sliding-attention theta differs silently runs the
+    wrong RoPE base -- mmBERT is exactly that case, both of its thetas are 160000. Map the
+    values onto `global_rope_theta` / `local_rope_theta`, which 4.x does read. On
+    transformers 5 this is a no-op beyond re-setting the same numbers.
+    """
+    rope = getattr(ecfg, "rope_parameters", None)
+    if not isinstance(rope, dict):
+        return
+    flat = rope.get("rope_theta")
+    for layer_type, attr in (("full_attention", "global_rope_theta"),
+                             ("sliding_attention", "local_rope_theta")):
+        params = rope.get(layer_type)
+        theta = params.get("rope_theta") if isinstance(params, dict) else flat
+        if theta is not None and hasattr(ecfg, attr):
+            setattr(ecfg, attr, float(theta))
+
+
 def build_model(cfg: Dict, encoder_dir: Optional[str] = None, pretrained: bool = True) -> DecisionModel:
     from transformers import AutoConfig, AutoModel
 
     if not pretrained or (encoder_dir and os.path.exists(encoder_dir)):
         ecfg = AutoConfig.from_pretrained(encoder_dir or cfg["encoder"])
+        _apply_rope_config(ecfg)
         enc = AutoModel.from_config(ecfg, attn_implementation="sdpa")
     else:
         enc = AutoModel.from_pretrained(cfg["encoder"], attn_implementation="sdpa")
@@ -264,6 +315,13 @@ def collate_items(batch, pad_id: int):
         mpos[i, :k] = torch.tensor(it["markers"])
         mmask[i, :k] = True
         if has_target and "target" in it:
+            if len(it["target"]) > kmax:
+                # Otherwise this lands as "The expanded size of the tensor (k) must match the
+                # existing size (kmax)" from inside the assignment, which says nothing about the
+                # actual mistake: a target with more entries than the item has options.
+                raise ValueError(
+                    "collate_items: item %d has %d target entries but only %d marker positions; "
+                    "a target needs one entry per option" % (i, len(it["target"]), kmax))
             target[i, : len(it["target"])] = torch.tensor(it["target"], dtype=torch.float32)
 
     res = {

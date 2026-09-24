@@ -17,7 +17,6 @@
 [![Dev.to Article](https://img.shields.io/badge/dev.to-Read%20Article-0A0A0A?logo=devdotto&logoColor=white)](https://dev.to/nandakishor_m_6cc0adfde9f/i-built-non-autoregressive-decision-models-a-year-ago-then-a-frontier-lab-called-it-a-18me)
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-nandakishorm-FFDD00?logo=buy-me-a-coffee&logoColor=black)](https://www.buymeacoffee.com/nandakishorm)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Hosted API](https://img.shields.io/badge/Hosted%20API-impossibl-111111)](https://impossibl.com/convaiinnovations/laya)
 
 </div>
 
@@ -35,16 +34,31 @@ Three checkpoints, and a `Router` that picks between them per request:
 | [`laya-multilingual`](https://huggingface.co/convaiinnovations/laya-multilingual) | mmBERT-base | 322M | 1024 | 100+ languages, 2x faster |
 | [`laya-typed-decisions`](https://huggingface.co/convaiinnovations/laya-typed-decisions) | ModernBERT-large | 421M | 1024 | the typed-decisions workflows |
 
-### What's new in 0.3.7
+### What's new in 0.3.11
 
-* **About 10x faster loading.** Checkpoints are built without the throwaway random weight initialisation, so `laya.load()` drops from about 22 s to about 2 s on CPU with bit-identical answers. This also skips the pass that crashed on Windows with Python 3.14 (#123).
-* **Better routing for non-English Latin text.** Plain-ASCII Spanish, Italian, Portuguese and French (accents stripped by mail clients and ticket systems) and Brazilian Portuguese support text now reach the multilingual checkpoint. Letters in scripts the router has no range for no longer fall through to English, and URLs, e-mail addresses and dotted names no longer count as words. Checked on 20,000 English texts, with no English prose moved.
-* **A Jev-compatible HTTP server.** `pip install "laya[serve]"`, then `laya-serve`, speaks `POST /v1/systemone`, so existing TypeSafe clients work by changing `baseUrl`. See [Self-Hosting](#self-hosting-http-server-jev-compatible).
-* **Router defaults and hooks.** `Router()` keeps two checkpoints resident, so alternating languages no longer reload a model on every request. You can pass your own language guess with `lang_guess=` and send undecided text to `Router(default=...)`. `Router` and `Agent` also work as context managers, and evicted models free their memory.
+* **Routed batches.** `Router.predict_batch(requests)` routes each request, groups them by checkpoint and question set, and scores each group in shared forward passes, with answers identical to one `predict` call per request. Each request can set its own `model`, `task`, `lang` or `lang_guess`. See [Heterogeneous routed batches](#heterogeneous-routed-batches).
+* **Prediction hooks.** Opt-in hooks run around every decision on `Agent`, `Router` and `ONNXAgent`, to audit, trace, redact, cache or gate results. With no hooks set, answers are identical to before. See [Prediction Hooks](#prediction-hooks).
+* **transformers 4.x and Apple GPUs.** Checkpoints re-saved by transformers 5 now load with the right RoPE settings on transformers 4.x, and `predict()` no longer crashes on MPS builds without an autocast backend.
+* **Stricter `noul` questions.** A `noul` `criteria` dict keyed anything other than `true`/`false` is now rejected with a clear message instead of being silently replaced by the defaults. Use `labels` to change the wording.
+* **Safer HTTP server.** Timing-safe API key checks, request size and question limits (413), a 400 for malformed JSON, errors that do not leak paths, and a validated port. Docker Compose binds `laya-serve` to loopback by default and adds a healthcheck.
+* **More hardware and docs.** Native ARM64 and DGX Spark container builds, a documentation site built from `docs/`, and a local web GUI demo under `examples/`.
+* **Smaller fixes.** Plain-ASCII German routes to the multilingual checkpoint, very large e-mails and states are bounded before regex work, `ONNXAgent` validates questions like `Agent`, an empty `HF_TOKEN` no longer breaks downloads, the tokenizer config is written atomically, and the `langchain` extra installs `langgraph`.
+
+### What's new in 0.3.10
+
+0.3.10 changes only this README; its code is the same as 0.3.9. Everything below is new since 0.3.6. `pip install -U laya` for all of it; the checkpoints are unchanged.
+
+* **About 10x faster loading.** Checkpoints are built without the throwaway random weight initialisation, so `laya.load()` drops from about 22 s to about 2 s on CPU with bit-identical answers. This also skips the pass that crashed on Windows with Python 3.14 (#123). A second `Agent` for the same checkpoint reuses its parsed tokenizer and loads in about 0.5 s.
+* **`import laya` no longer loads torch.** Routing, language detection and e-mail cleaning work in lightweight processes; torch loads on first use of a model.
+* **Batch scoring.** `agent.predict_batch(states, questions)` scores many states in shared forward passes, with answers identical to calling `predict` one state at a time. See [Batch Mode](#batch-mode-score-many-states-in-one-forward-pass).
+* **Faster paths, all opt-in.** `laya.load(..., fast=True)` uses a TileLang GPU fast path that matches the stock bf16 forward within rounding (see [GPU Fast Path](#gpu-fast-path-tilelang)). `Agent(compile=True)` enables `torch.compile`, and `laya.onnx_agent.ONNXAgent` runs an exported model on ONNX Runtime.
+* **Run it your way, locally.** A self-hosted Jev-compatible HTTP server (`pip install "laya[serve]"`, then `laya-serve`, see [Self-Hosting](#self-hosting-http-server-jev-compatible)), a `laya` [command](#command-line) for quick local tests, an optional [MCP server](#mcp-server-optional) (`pip install "laya[mcp]"`), [LangChain and LangGraph](#langchain-and-langgraph-integration) routing, guardrails, triage and evaluation (`pip install "laya[langchain]"`), a Docker quickstart under `docs/docker.md`, and `laya-ts/`, a TypeScript package for Node and the browser that gives the same answers as the Python package.
+* **Better routing.** Plain-ASCII Spanish, Italian, Portuguese and French, Brazilian Portuguese support text, CJK text containing Latin brand names, romanized Bangla and Azerbaijani now reach the multilingual checkpoint. Scripts the router has no range for no longer fall through to English, and URLs, e-mail addresses and dotted names no longer count as words. Checked on 20,000 English texts: at most 5 English sentences move, all quoting long native-script names.
+* **Router defaults and hooks.** `Router()` keeps two checkpoints resident, so alternating languages no longer reload a model on every request. Pass your own language guess with `lang_guess=`, send undecided text to `Router(default=...)`, and use `Router` and `Agent` as context managers. `Router.preload([])` loads nothing.
+* **Correctness fixes.** Long conversation lists keep the newest turn when truncated. Non-ASCII instructions reach the model as text instead of `\uXXXX` escapes. `truncate_left` with no room left keeps none of the state rather than all of it. `noul` questions accept an opt-in `labels` override, and Intel XPU devices are detected.
 * **Clearer errors and safer edge cases.** A malformed question is rejected with a message naming the question and what to fix. An empty question set returns an empty answer, and invalid temperatures in a checkpoint no longer stop it loading.
-* **E-mail cleaning for Portuguese and Spanish** replies, signatures and footers.
-* **Fine-tuning notebook fixes.** Calibration is now fitted on a held-out slice rather than on training data (#186), and stale temperature overrides are cleared before a refit.
-* **Docker quickstart** under `docs/docker.md`.
+* **E-mail cleaning.** Portuguese and Spanish replies, signatures and footers are handled. A body that mentions "confidential", or a line that starts with "Thanks for" or "Best", is no longer deleted as boilerplate, and more real sign-offs are removed.
+* **Fine-tuning notebook fixes.** Calibration is fitted on a held-out slice rather than on training data (#186), stale temperature overrides are cleared before a refit, and decision-head activation checkpointing is honoured.
 
 ---
 
@@ -117,35 +131,50 @@ Continue with the [Router quickstart](#quickstart-route-mode-recommended) to run
 
 ---
 
-## Hosted API
+### Command line
 
-If you would rather not run a GPU, [impossibl](https://impossibl.com) serves Laya on a hosted
-endpoint, **free**, wire-compatible with TypeSafe's System One API — so a client written
-against Jev moves over by changing the base URL and the model id, and nothing else.
+Installing the package also installs a `laya` command for quick local testing, no script needed:
 
 ```bash
-curl https://api.impossibl.com/v1/systemone \
-  -H "Authorization: Bearer $IMPOSSIBL_API_KEY" \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "convaiinnovations/laya",
-    "state": "Hi, we were billed twice for March. Refund the duplicate today or we cancel.",
-    "questions": {
-      "churn_risk": { "type": "noul", "instructions": "Is this customer likely to churn?" }
-    }
-  }'
+laya "I was charged twice, please refund"            # routing decision only; works offline, no download
+laya "Refactor this service" --predict               # full answers (downloads the checkpoint on first use)
+laya "Mein Konto wurde zweimal belastet" --lang de   # force a language instead of detecting it
+laya                                                 # interactive mode
 ```
 
-| model id | checkpoint |
-|---|---|
-| `convaiinnovations/laya` | whichever the `Router` picks, same as `Router(preload=True)` |
-| `convaiinnovations/laya-multilingual` | pins `laya-multilingual`, whatever the script |
+Routing alone never downloads a checkpoint, so it returns in milliseconds. `--predict` loads the routed checkpoint, which needs network access to the Hugging Face hub the first time; if a checkpoint cannot be downloaded, the CLI says so instead of crashing.
 
-The second id exists because routing is by script: Latin-script text is answered by the
-English checkpoint, so Spanish or Portuguese never reaches the multilingual weights on its
-own. Both ids run the checkpoints published here, unmodified, at `max_len` 8192.
+---
 
-[Docs](https://impossibl.com/docs/evaluation) · [Model page](https://impossibl.com/convaiinnovations/laya)
+## Try it locally: web GUI + JSON API
+
+`examples/server.py` is a self-contained FastAPI app for testing Laya without writing any code:
+a request builder (or a raw-JSON paste box) that renders `choice`/`score`/`noul` answers as
+0-100 bars, plus a plain JSON API (`/predict`, `/predict/batch`) for scripting against.
+
+```bash
+pip install "laya[serve]"
+python examples/server.py               # http://127.0.0.1:8000
+```
+
+Open `http://127.0.0.1:8000` in a browser for the builder UI, or hit it directly:
+
+```bash
+curl -s localhost:8000/predict -H 'content-type: application/json' -d '{
+  "state": {"body": "We were billed twice for March. Please refund it today."},
+  "questions": {
+    "department": {"type": "choice",
+                   "instructions": "Which department should handle this?",
+                   "criteria": {"billing": "invoices, payments, refunds", "other": "everything else"}},
+    "urgency": {"type": "score",
+                "instructions": "How urgent is this?",
+                "criteria": ["not urgent", "soon", "critical"]}
+  }
+}' | python -m json.tool
+```
+
+`--no-preload` loads checkpoints lazily instead of all three up front; `--device cuda|cpu|mps`
+pins the device. See `python examples/server.py --help` for the rest.
 
 ---
 
@@ -237,6 +266,31 @@ router.route({"body": "Esqueci minha senha"}).model                 # -> multili
 router.route({"body": "Please refund the duplicate charge"}).model  # -> english
 ```
 
+### Heterogeneous routed batches
+
+If a lazy router receives an interleaved workload whose requests route to different checkpoints, calling `predict()` in a loop can still cause unnecessary checkpoint churn when the required checkpoints exceed the resident cache, for example with `max_loaded=1` or when `typed-decisions` is also used.
+
+`Router.predict_batch()` routes the full workload first, groups requests by checkpoint, then groups requests with the same question schema within each checkpoint. Each compatible group is dispatched to `Agent.predict_batch()` so states can share forward passes, and results are restored to the original request order.
+
+```python
+requests = [
+    {"state": "Please refund invoice 1", "questions": questions},
+    {"state": "تم خصم المبلغ مرتين", "questions": questions},
+    {"state": "Please refund invoice 2", "questions": questions},
+]
+
+results = Router(max_loaded=1).predict_batch(requests)
+# results stay in input order while compatible requests are batched by checkpoint
+```
+Each item can independently set `model`, `task`, `lang`, or `lang_guess`. Use `route_batch(requests)` when you only want the ordered routing decisions without loading any checkpoint. `predict_many` is an alias for `predict_batch`.
+
+Requests are validated before model loading. Different requests may use different question schemas; requests sharing both a checkpoint and question schema are passed together to `Agent.predict_batch()`.
+
+You can also bound the Agent-level forward-pass batch size:
+```python
+results = router.predict_batch(requests, batch_size=8)
+```
+
 ### Why Route: The Evidence
 
 On a shared benchmark (17,416 questions, one T4 GPU, identical questions per model):
@@ -282,6 +336,12 @@ router.unload()                     # free memory
 | `Router(max_loaded=1)` | 7 to 10 s on every language switch | 1 per switch |
 | `Router(preload=True)` | **32.8 ms (GPU) / 193–464 ms (CPU)** | **none** |
 
+A rebuild still re-reads the checkpoint, but each checkpoint's tokenizer is parsed once per process
+and reused by every `Agent` — including one the Router rebuilds after eviction. The multilingual
+`tokenizer.json` alone is 34 MB / 256k vocab, several times the cost of applying its weights.
+Preloading is still the right answer for a server: it removes the rebuild rather than making it
+cheaper.
+
 ### Supplying Your Own Language Detection
 
 Routing asks one question: *can the English checkpoint read this state?* The built-in detector answers it from the script and a function-word heuristic, and is deliberately dependency-free. That heuristic is best-effort on Latin-script languages it holds no word list for, so a short request can carry no usable signal:
@@ -319,7 +379,7 @@ the [`hs-jev`](https://github.com/getmissionctrl/hs-jev) Haskell client — just
 needs its `baseUrl` repointed; nothing else changes.
 
 ```bash
-pip install "laya[serve]"          # adds fastapi + uvicorn
+pip install "laya[serve]"          # adds fastapi + uvicorn + python-multipart
 LAYA_DEVICE=cuda LAYA_PRELOAD=1 laya-serve   # binds 0.0.0.0:8000, preloads all 3 checkpoints
 ```
 
@@ -397,6 +457,50 @@ Passing an empty question dictionary to `agent.predict(state, {})` or
 and `"usage": {"input_tokens": 0, "output_tokens": 0}`. The state is not tokenized
 and no model forward pass runs.
 
+### Batch Mode: score many states in one forward pass
+
+`predict` handles one state per call, which leaves most of the GPU's batch dimension idle. When you
+have a list of items to score against the *same* questions — a backlog of tickets, a table of rows,
+a log slice — `predict_batch` packs them into shared forward passes:
+
+```python
+states = [{"body": t} for t in ticket_texts]           # a list of states
+
+results = agent.predict_batch(states, questions)       # one forward pass for the whole list
+# results[i] is exactly what agent.predict(states[i], questions) would return
+
+# Bound peak memory when the list (or the texts) are large — chunk into passes of N:
+results = agent.predict_batch(states, questions, batch_size=64)
+```
+
+Results are aligned with `states` by index and identical in shape to `predict`. Decisions match the
+one-at-a-time path exactly (numbers are bit-identical on CPU; on GPU they can differ in the 4th
+decimal because fp16 autocast reorders reductions across padding widths). Batching is a **GPU
+throughput win** — on an RTX 5060 Ti, per-decision latency drops from ~10 ms one-by-one to ~1 ms
+batched (measured ~9–10×). On CPU the model is already compute-bound, so batching does not speed it
+up; use it there only for API convenience.
+
+---
+
+## GPU Fast Path (TileLang)
+
+`pip install laya[fast]` adds an optional forward built from fused [TileLang](https://github.com/tile-ai/tilelang)
+kernels: GEMM + bias/activation epilogues, GEMM + GEGLU, residual + LayerNorm, in-place RoPE, and a
+sliding-window flash attention that reads the packed QKV buffer directly. Weights stay resident in bf16
+and every (batch, length) bucket is captured as a CUDA graph, so a one-question call no longer pays
+~200 kernel launches from Python.
+
+```python
+agent = laya.load("convaiinnovations/laya", fast=True)   # or: agent.accelerate()
+agent.predict(state, questions)                            # same API, same answers
+```
+
+Numerics: on a fixed set of 60 states the fast path is at least as close to an fp32 forward as the stock bf16
+path is (max |Δp| ≤ 0.05 vs fp32 on both checkpoints, argmax agreement ≥ 47/48 per question type; every per-option
+probability is in `benchmarks/results/parity_*.json`) — see `benchmarks/parity_fast.py` and [BENCHMARKS.md](BENCHMARKS.md#gpu-fast-path).
+Falls back to the stock forward on CPU/MPS or when `tilelang` is not installed; `agent.deaccelerate()`
+restores it. Kernels compile once per shape bucket on first use (a few seconds, cached on disk).
+
 ---
 
 ## Automated Confidence Gating
@@ -414,6 +518,29 @@ else:
     # Low confidence: escalate to human triage
     escalate_to_human_agent(dept, reason=f"Low confidence ({conf:.2f})")
 ```
+
+---
+
+## Prediction Hooks
+
+Hooks observe or shape every decision without forking: audit logging, PII redaction before
+inference, caching, metrics, confidence gating, routing overrides, and forwarding to an
+external service. They are opt-in, and unset hooks are a no-op.
+
+```python
+import laya
+
+def log(ctx):
+    print(ctx.model, ctx.results[0]["answers"], ctx.elapsed_ms)
+
+agent = laya.load("convaiinnovations/laya", on_predict_end=log)
+agent.system_one("I was charged twice.", {"urgent": {"type": "noul", "instructions": "Urgent?"}})
+```
+
+A hook is a plain callable, or an object implementing any of `on_predict_start`,
+`on_predict_end`, `on_route`, `on_load`, `on_evict`, `on_error`. A start hook can rewrite the
+state/questions or `ctx.skip(...)` a cached answer; an end hook can rewrite the result. See
+[**`docs/hooks/`**](docs/hooks/index.md) and [`examples/hooks/`](examples/hooks/).
 
 ---
 
@@ -441,6 +568,29 @@ triage = agent.predict({"message": "My payment failed twice"}, laya.triage_quest
 
 ---
 
+## LangChain and LangGraph Integration
+
+Fast System 1 routing and guardrails directly inside LangGraph workflows and LCEL chains:
+
+```python
+from laya.integrations.langchain import LayaRouter, LayaGuardrail
+
+# 1. Sub-35ms LangGraph conditional edge routing with confidence fallback
+router = LayaRouter(
+    criteria={"billing": "invoices, charges", "tech": "bugs, outages"},
+    confidence_threshold=0.80,
+    fallback="human_agent",
+)
+workflow.add_conditional_edges("triage", router)
+
+# 2. Inline prompt guardrails
+guard = LayaGuardrail(action="raise")  # raises LayaGuardrailError on jailbreak/injection
+```
+
+See [**`docs/langchain.md`**](docs/langchain.md) for full guide, support ticket triage nodes, and remote HTTP server configuration.
+
+---
+
 ## Decision Primitives
 
 | Primitive | Output | Use Cases |
@@ -448,6 +598,74 @@ triage = agent.predict({"message": "My payment failed twice"}, laya.triage_quest
 | **`choice`** | Top label, probabilities per option, confidence | Department routing, intent classification, topic categorization |
 | **`score`** | Expected level on ordinal rubric, distribution, confidence | Frustration level, ticket urgency, harm severity |
 | **`noul`** | Calibrated probability P(true) from 0.0 to 1.0 | Phishing detection, spam filtering, jailbreak detection, churn risk |
+
+`noul` always scores two semantic slots in `[false, true]` order and returns the probability of
+the second slot. For compatibility, those slots are shown to the model as `false` and `true` by
+default. The optional `labels` mapping overrides only that model-facing text without changing the
+returned meaning:
+
+```python
+question = {
+    "type": "noul",
+    "instructions": "Is this review positive?",
+    "criteria": {
+        "false": "the review is negative",
+        "true": "the review is positive",
+    },
+    "labels": {
+        "false": "B",
+        "true": "A",
+    },
+}
+```
+
+The `labels` mapping is optional. It must contain exactly the string keys `false` and `true`,
+whose values must be distinct non-empty strings. Mapping order does not matter, and the returned
+`noul` value is still P(true). Label sensitivity varies by checkpoint and state, so validate any
+override on your own data rather than treating `A`/`B` as a universal fix.
+
+---
+
+## MCP Server (Optional)
+
+Laya can be exposed as an [MCP](https://modelcontextprotocol.io) stdio server, so any MCP
+client (OpenClaw, Claude Desktop, Cursor, ...) can call typed decisions as tools
+(`laya_predict`, `laya_route`, `laya_preset`, `laya_status`) without writing glue code.
+This is an **optional extra**: the core package has no `mcp` dependency.
+
+```bash
+pip install "laya[mcp]"
+laya-mcp-server          # or: python -m laya.mcp.server
+```
+
+Example MCP client configuration (stdio transport):
+
+```json
+{
+  "mcpServers": {
+    "laya": {
+      "command": "laya-mcp-server",
+      "env": { "LAYA_DEVICE": "cpu" }
+    }
+  }
+}
+```
+
+The environment variables follow the contract documented at the top of
+[`laya/serve.py`](laya/serve.py), so the same variable has one meaning across the
+package:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `LAYA_DEVICE` | (auto) | Same as `laya.serve`: the value is passed straight to torch |
+| `LAYA_PRELOAD` | `1` | Same as `laya.serve`: build the checkpoints at startup, not lazily |
+| `LAYA_MODELS` | `english,multilingual` | Comma list to preload (serve contract). MCP difference: an empty value preloads `english,multilingual` so `typed-decisions` stays lazy; in `laya.serve` empty means every checkpoint |
+| `LAYA_THREADS` | (torch default) | Same as `laya.serve`: cap torch intra-op threads for CPU inference; keep it at or below the physical core count |
+
+The tools return structured JSON (answers with probabilities, routing metadata, device,
+`latency_ms`). As with the SDK, use it for structured decisions only; not for open Q&A or
+text generation. Tests: `tests/test_mcp.py` (CI, no weights) and
+`tests/test_mcp_local_e2e.py` (local, real weights and a real stdio handshake).
 
 ---
 
@@ -546,7 +764,7 @@ All of the capability on this benchmark comes from fine-tuning.
 
 Across all 51 languages the English checkpoint macro-averages **0.227** with macro ECE
 **0.733**, and only 23 of 51 languages clear 3x random. Khmer scores **0.000 at 95.2%
-confidence**. This is why [`Router`](#model-routing-three-checkpoints-one-call) exists: the
+confidence**. This is why [`Router`](#quickstart-route-mode-recommended) exists: the
 model's own confidence gives no warning, so the routing decision has to be made before the
 forward pass.
 
@@ -580,6 +798,10 @@ failure; it does not establish calibrated confidence.
   against a 0.318 random baseline and a 0.461 majority-class baseline. The 0.766 figure comes
   from the checkpoint fine-tuned on that benchmark's own training split. Laya is a fast base to
   specialise, not a zero-shot decision engine.
+* **Avoid boolean-word labels in `choice` questions.** Choice keys are rendered verbatim, and the
+  current checkpoints can follow labels such as `true`/`false` or `yes`/`no` instead of the option
+  descriptions. Use semantic labels or opaque labels such as `A`/`B`, and validate them on the
+  checkpoint and states you serve.
 * **High-cardinality choice questions and token budgets:** Sequences split into an option prompt budget (`head_max_len`) and the remaining document/state budget (`max_len - head_max_len`):
   * `laya` (English) defaults to 512 context (`head_max_len = 192`, ~320 tokens for state).
   * `laya-multilingual` and `laya-typed-decisions` default to 1,024 context (`head_max_len = 256`, ~768 tokens for state; mmBERT-base encoder supports up to 8,192 with RoPE).
@@ -617,12 +839,28 @@ result["shortlist"]["intent"]["labels"]  # the top 20 labels sent to the model
 [Issue #102](https://github.com/NandhaKishorM/laya/issues/102) reports that a top-20 zero-shot shortlist moved a BANKING77 run from 54.3% to 60.8% on the reporter's setup. Those figures are the reporter's; this repository has not remeasured them.
 
 * Ordinal `score` questions are the weakest primitive (SST-5 0.372).
-* **`noul` can follow its option labels instead of the state, most strongly on `laya` (English).** `noul` renders its two options as `false:` / `true:`, and on the English checkpoint that label pair can dominate the answer, returning a confident "no" for clearly positive input (#156). Until a retrained checkpoint lands, check `noul` answers on your own data. If they look stuck, ask the same question as a two-option `choice` with neutral keys and your yes/no wording as the descriptions:
+* **`noul` can follow its option labels instead of the state, most strongly on `laya` (English).** `noul` renders its two options as `false:` / `true:` by default, and on the English checkpoint that label pair can dominate the answer, returning a confident "no" for clearly positive input (#156). Until a retrained checkpoint lands, check `noul` answers on your own data. You can override the model-facing pair while keeping the `noul` result as P(true):
+
+  ```python
+  {"type": "noul", "instructions": "Is this review positive?",
+   "criteria": {"true": "yes, the review is positive", "false": "no, the review is negative"},
+   "labels": {"true": "A", "false": "B"}}
+  ```
+
+  Label sensitivity varies by checkpoint and state, so validate the override on your own data. A
+  two-option `choice` with neutral keys remains another workaround:
 
   ```python
   {"type": "choice", "instructions": "Is this review positive?",
    "criteria": {"A": "yes, the review is positive", "B": "no, the review is negative"}}
   ```
+
+  `criteria` on a `noul` must be keyed `true`/`false` — those two keys *are* the option text the
+  model reads, so any other key is rejected instead of being quietly replaced with the defaults.
+  Before that check, `criteria: {"yes": ..., "no": ...}` was accepted, dropped, and answered
+  against `false:` / `true:` anyway, which cost 2 of 3 clearly positive reviews on the English
+  checkpoint ([#156](https://github.com/NandhaKishorM/laya/issues/156)). Use `labels` as above to
+  change the wording without touching the option text.
 * **`laya-multilingual` has a position bias on `score` questions** (#131): it rarely picks the first-listed level, in any language. For English score questions, route to `model="english"`, and for other languages validate score outputs on your own data before relying on them.
 * **`action.act_probability` carries no usable signal yet** (#185). It reads 1.0 for almost every input, and its raw logits run against correctness (AUROC 0.30 on 396 labelled decisions). Gate on `confidence` instead, which reaches an AUROC of 0.77 on the same items.
 * `laya` collapses outside English; `laya-multilingual` is weaker on English. Route, or pick
@@ -633,7 +871,9 @@ result["shortlist"]["intent"]["labels"]  # the top 20 labels sent to the model
 ## Community Tools
 
 * **[omp-laya-judge](https://github.com/F0Rextasy/omp-laya-judge)**: an [oh-my-pi](https://github.com/can1357/oh-my-pi) plugin with a local System-1 judge MCP server and skill (`choice`/`bool`/`score`, 0 tokens, about 0.3 s on CPU), confidence-gated escalation, and reproducible quiz and Snake demos.
-* [laya-adk-toolkit](https://github.com/Ashfaqbs/laya-adk-toolkit) — [Google ADK](https://google.github.io/adk-docs/) tools that let an agent call Laya's `classify`/`score`/`detect` typed decisions directly as tools, instead of asking an LLM to guess at structured output.
+* **[laya-adk-toolkit](https://github.com/Ashfaqbs/laya-adk-toolkit)**: [Google ADK](https://google.github.io/adk-docs/) tools that let an agent call Laya's `classify`/`score`/`detect` typed decisions directly as tools, instead of asking an LLM to guess at structured output.
+* **[laya-Ascend](https://github.com/zzhdbw/laya-Ascend)**: Laya on Huawei Ascend NPUs through `torch-npu`, with a CPU vs NPU benchmark (34x to 71x faster at batch size 1), a setup guide, and Snake and Tetris demos.
+* **[laya-apple](https://github.com/tc3oliver/laya-apple)**: a correctness-validated Laya runtime for Apple silicon that uses the MLX GPU and the Apple Neural Engine, with automatic routing and concurrent heterogeneous serving.
 
 ---
 
@@ -652,6 +892,13 @@ the whole loop: build the dataset, train with RLCD (proper-scoring-rule rewards,
 policy gradient), fit calibration temperatures, evaluate, and push the result to the Hub.
 
 * **[`notebooks/laya_finetune_typed_decisions_2xT4_kaggle.ipynb`](notebooks/laya_finetune_typed_decisions_2xT4_kaggle.ipynb)**
+
+The notebook enables gradient checkpointing on both the encoder and the decision head.
+For custom training loops, `model.head_checkpointing = True` enables activation
+checkpointing for the decision-head layers; enable the encoder's gradient checkpointing
+separately. During gradient-enabled training, this reduces stored intermediate activations
+by recomputing them during backward, trading extra computation for lower activation memory.
+The head flag defaults to `False` and is bypassed in evaluation and under `torch.no_grad()`.
 
 The notebook fits one `temperature` per type (`choice`, `score`, `noul`) and removes inherited
 `temperature_by_options` from the exported config. Otherwise those old bucket values take
